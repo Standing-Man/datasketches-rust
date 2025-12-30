@@ -20,6 +20,8 @@
 //! Uses open addressing with a custom stride function to handle collisions.
 //! Provides better performance than List when many coupons are stored.
 
+use crate::codec::SketchBytes;
+use crate::codec::SketchSlice;
 use crate::error::Error;
 use crate::hll::HllType;
 use crate::hll::KEY_MASK_26;
@@ -84,49 +86,42 @@ impl HashSet {
     }
 
     /// Deserialize a HashSet from bytes
-    pub fn deserialize(bytes: &[u8], compact: bool) -> Result<Self, Error> {
+    pub fn deserialize(
+        mut cursor: SketchSlice,
+        lg_arr: usize,
+        compact: bool,
+    ) -> Result<Self, Error> {
         // Read coupon count from bytes 8-11
-        let coupon_count = read_u32_le(bytes, HASH_SET_COUNT_INT) as usize;
-
-        // Compute array size
-        let lg_arr = bytes[LG_ARR_BYTE] as usize;
+        let coupon_count = cursor
+            .read_u32_le()
+            .map_err(|_| Error::insufficient_data("coupon_count"))?;
+        let coupon_count = coupon_count as usize;
 
         if compact {
             // Compact mode: only couponCount coupons are stored
-            let expected_len = HASH_SET_INT_ARR_START + (coupon_count * 4);
-            if bytes.len() < expected_len {
-                return Err(Error::insufficient_data(format!(
-                    "expected {}, got {}",
-                    expected_len,
-                    bytes.len()
-                )));
-            }
-
             // Create a new hash set and insert coupons one by one
             let mut hash_set = HashSet::new(lg_arr);
             for i in 0..coupon_count {
-                let offset = HASH_SET_INT_ARR_START + i * COUPON_SIZE_BYTES;
-                let coupon = read_u32_le(bytes, offset);
+                let coupon = cursor.read_u32_le().map_err(|_| {
+                    Error::insufficient_data(format!(
+                        "expected {coupon_count} coupons, failed at index {i}"
+                    ))
+                })?;
                 hash_set.update(coupon);
             }
             Ok(hash_set)
         } else {
             // Non-compact mode: full hash table with empty slots
             let array_size = 1 << lg_arr;
-            let expected_len = HASH_SET_INT_ARR_START + (array_size * 4);
-            if bytes.len() < expected_len {
-                return Err(Error::insufficient_data(format!(
-                    "expected {}, got {}",
-                    expected_len,
-                    bytes.len()
-                )));
-            }
 
             // Read entire hash table including empty slots
             let mut coupons = vec![0u32; array_size];
             for (i, coupon) in coupons.iter_mut().enumerate() {
-                let offset = HASH_SET_INT_ARR_START + i * COUPON_SIZE_BYTES;
-                *coupon = read_u32_le(bytes, offset);
+                *coupon = cursor.read_u32_le().map_err(|_| {
+                    Error::insufficient_data(format!(
+                        "expected {array_size} coupons, failed at index {i}"
+                    ))
+                })?;
             }
 
             Ok(Self {
@@ -147,29 +142,32 @@ impl HashSet {
 
         // Compute size
         let array_size = if compact { coupon_count } else { 1 << lg_arr };
-        let total_size = HASH_SET_INT_ARR_START + (array_size * 4);
+        let total_size = SET_PREAMBLE_SIZE + (array_size * 4);
 
-        let mut bytes = vec![0u8; total_size];
+        let mut bytes = SketchBytes::with_capacity(total_size);
 
         // Write preamble
-        bytes[PREAMBLE_INTS_BYTE] = HASH_SET_PREINTS;
-        bytes[SER_VER_BYTE] = SERIAL_VER;
-        bytes[FAMILY_BYTE] = HLL_FAMILY_ID;
-        bytes[LG_K_BYTE] = lg_config_k;
-        bytes[LG_ARR_BYTE] = lg_arr as u8;
+        bytes.write_u8(HASH_SET_PREINTS);
+        bytes.write_u8(SERIAL_VER);
+        bytes.write_u8(HLL_FAMILY_ID);
+        bytes.write_u8(lg_config_k);
+        bytes.write_u8(lg_arr as u8);
 
         // Write flags
         let mut flags = 0u8;
         if compact {
             flags |= COMPACT_FLAG_MASK;
         }
-        bytes[FLAGS_BYTE] = flags;
+        bytes.write_u8(flags);
+
+        // Write unused byte
+        bytes.write_u8(0);
 
         // Write mode byte: SET mode with target HLL type
-        bytes[MODE_BYTE] = encode_mode_byte(CUR_MODE_SET, hll_type as u8);
+        bytes.write_u8(encode_mode_byte(CUR_MODE_SET, hll_type as u8));
 
         // Write coupon count
-        write_u32_le(&mut bytes, HASH_SET_COUNT_INT, coupon_count as u32);
+        bytes.write_u32_le(coupon_count as u32);
 
         // Write coupons
         if compact {
@@ -183,18 +181,16 @@ impl HashSet {
                 .collect();
             coupons_vec.sort_unstable();
 
-            for (i, coupon) in coupons_vec.iter().enumerate() {
-                let offset = HASH_SET_INT_ARR_START + i * 4;
-                bytes[offset..offset + 4].copy_from_slice(&coupon.to_le_bytes());
+            for coupon in coupons_vec.iter().copied() {
+                bytes.write_u32_le(coupon);
             }
         } else {
             // Non-compact mode: write entire hash table
-            for (i, coupon) in self.container.coupons.iter().enumerate() {
-                let offset = HASH_SET_INT_ARR_START + i * 4;
-                bytes[offset..offset + 4].copy_from_slice(&coupon.to_le_bytes());
+            for coupon in self.container.coupons.iter().copied() {
+                bytes.write_u32_le(coupon);
             }
         }
 
-        bytes
+        bytes.into_bytes()
     }
 }

@@ -36,4 +36,5 @@ pub mod hll;
 pub mod tdigest;
 pub mod theta;
 
+mod codec;
 mod hash;

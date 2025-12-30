@@ -21,6 +21,8 @@
 //! This is sufficient for most HLL use cases without needing exception handling or
 //! cur_min optimization like Array4.
 
+use crate::codec::SketchBytes;
+use crate::codec::SketchSlice;
 use crate::error::Error;
 use crate::hll::NumStdDev;
 use crate::hll::estimator::HipEstimator;
@@ -169,41 +171,33 @@ impl Array6 {
     ///
     /// Expects full HLL preamble (40 bytes) followed by packed 6-bit data.
     pub fn deserialize(
-        bytes: &[u8],
+        mut cursor: SketchSlice,
         lg_config_k: u8,
         compact: bool,
         ooo: bool,
     ) -> Result<Self, Error> {
-        use crate::hll::serialization::*;
+        fn make_error(tag: &'static str) -> impl FnOnce(std::io::Error) -> Error {
+            move |_| Error::insufficient_data(tag)
+        }
 
         let k = 1 << lg_config_k;
         let num_bytes = num_bytes_for_k(k);
-        let expected_len = if compact {
-            HLL_PREAMBLE_SIZE // Just preamble for compact empty sketch
-        } else {
-            HLL_PREAMBLE_SIZE + num_bytes
-        };
-
-        if bytes.len() < expected_len {
-            return Err(Error::insufficient_data(format!(
-                "expected {}, got {}",
-                expected_len,
-                bytes.len()
-            )));
-        }
 
         // Read HIP estimator values from preamble
-        let hip_accum = read_f64_le(bytes, HIP_ACCUM_DOUBLE);
-        let kxq0 = read_f64_le(bytes, KXQ0_DOUBLE);
-        let kxq1 = read_f64_le(bytes, KXQ1_DOUBLE);
+        let hip_accum = cursor.read_f64_le().map_err(make_error("hip_accum"))?;
+        let kxq0 = cursor.read_f64_le().map_err(make_error("kxq0"))?;
+        let kxq1 = cursor.read_f64_le().map_err(make_error("kxq1"))?;
 
         // Read num_at_cur_min (for Array6, this is num_zeros since cur_min=0)
-        let num_zeros = read_u32_le(bytes, CUR_MIN_COUNT_INT);
+        let num_zeros = cursor.read_u32_le().map_err(make_error("num_zeros"))?;
+        let _aux_count = cursor.read_u32_le().map_err(make_error("aux_count"))?; // always 0
 
         // Read packed byte array from offset HLL_BYTE_ARR_START
         let mut data = vec![0u8; num_bytes];
         if !compact {
-            data.copy_from_slice(&bytes[HLL_BYTE_ARR_START..HLL_BYTE_ARR_START + num_bytes]);
+            cursor.read_exact(&mut data).map_err(make_error("data"))?;
+        } else {
+            cursor.advance(num_bytes as u64);
         }
 
         // Create estimator and restore state
@@ -230,43 +224,43 @@ impl Array6 {
         let k = 1 << lg_config_k;
         let num_bytes = num_bytes_for_k(k);
         let total_size = HLL_PREAMBLE_SIZE + num_bytes;
-        let mut bytes = vec![0u8; total_size];
+        let mut bytes = SketchBytes::with_capacity(total_size);
 
         // Write standard header
-        bytes[PREAMBLE_INTS_BYTE] = HLL_PREINTS;
-        bytes[SER_VER_BYTE] = SERIAL_VER;
-        bytes[FAMILY_BYTE] = HLL_FAMILY_ID;
-        bytes[LG_K_BYTE] = lg_config_k;
-        bytes[LG_ARR_BYTE] = 0; // Not used for HLL mode
+        bytes.write_u8(HLL_PREINTS);
+        bytes.write_u8(SERIAL_VER);
+        bytes.write_u8(HLL_FAMILY_ID);
+        bytes.write_u8(lg_config_k);
+        bytes.write_u8(0); // unused for HLL mode
 
         // Write flags
         let mut flags = 0u8;
         if self.estimator.is_out_of_order() {
             flags |= OUT_OF_ORDER_FLAG_MASK;
         }
-        bytes[FLAGS_BYTE] = flags;
+        bytes.write_u8(flags);
 
         // cur_min is always 0 for Array6
-        bytes[HLL_CUR_MIN_BYTE] = 0;
+        bytes.write_u8(0);
 
         // Mode byte: HLL mode with HLL6 type
-        bytes[MODE_BYTE] = encode_mode_byte(CUR_MODE_HLL, TGT_HLL6);
+        bytes.write_u8(encode_mode_byte(CUR_MODE_HLL, TGT_HLL6));
 
         // Write HIP estimator values
-        write_f64_le(&mut bytes, HIP_ACCUM_DOUBLE, self.estimator.hip_accum());
-        write_f64_le(&mut bytes, KXQ0_DOUBLE, self.estimator.kxq0());
-        write_f64_le(&mut bytes, KXQ1_DOUBLE, self.estimator.kxq1());
+        bytes.write_f64_le(self.estimator.hip_accum());
+        bytes.write_f64_le(self.estimator.kxq0());
+        bytes.write_f64_le(self.estimator.kxq1());
 
         // Write num_at_cur_min (num_zeros for Array6)
-        write_u32_le(&mut bytes, CUR_MIN_COUNT_INT, self.num_zeros);
+        bytes.write_u32_le(self.num_zeros);
 
         // Write aux_count (always 0 for Array6)
-        write_u32_le(&mut bytes, AUX_COUNT_INT, 0);
+        bytes.write_u32_le(0);
 
         // Write packed byte array
-        bytes[HLL_BYTE_ARR_START..].copy_from_slice(&self.bytes);
+        bytes.write(&self.bytes);
 
-        bytes
+        bytes.into_bytes()
     }
 }
 
