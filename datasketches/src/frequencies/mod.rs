@@ -15,27 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! # Apache® DataSketches™ Core Rust Library Component
+//! Frequency sketches for finding heavy hitters in data streams.
 //!
-//! The Sketching Core Library provides a range of stochastic streaming algorithms and closely
-//! related Rust technologies that are particularly useful when integrating this technology into
-//! systems that must deal with massive data.
+//! This module implements the Frequent Items sketch from Apache DataSketches. It tracks
+//! approximate frequencies in a stream and can report heavy hitters with explicit
+//! error guarantees (no false negatives or no false positives).
 //!
-//! This library is divided into modules that constitute distinct groups of functionality.
+//! For background, see the Java documentation:
+//! <https://apache.github.io/datasketches-java/9.0.0/org/apache/datasketches/frequencies/FrequentItemsSketch.html>
 
-#![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(missing_docs)]
+mod reverse_purge_item_hash_map;
+mod serde;
+mod serialization;
+mod sketch;
 
-// See https://github.com/apache/datasketches-rust/issues/28 for more information.
-#[cfg(target_endian = "big")]
-compile_error!("datasketches does not support big-endian targets");
-
-pub mod countmin;
-pub mod error;
-pub mod frequencies;
-pub mod hll;
-pub mod tdigest;
-pub mod theta;
-
-mod codec;
-mod hash;
+pub use self::serde::ItemsSerde;
+pub use self::sketch::ErrorType;
+pub use self::sketch::FrequentItemsSketch;
+pub use self::sketch::Row;
