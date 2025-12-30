@@ -15,25 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! # Apache® DataSketches™ Core Rust Library Component
+//! Theta sketch implementation for cardinality estimation.
 //!
-//! The Sketching Core Library provides a range of stochastic streaming algorithms and closely
-//! related Rust technologies that are particularly useful when integrating this technology into
-//! systems that must deal with massive data.
+//! Theta sketch is a generalization of the Kth Minimum Value (KMV) sketch that uses
+//! a hash table to store retained entries and a theta parameter (sampling threshold)
+//! to control memory usage. When the hash table reaches capacity, theta is reduced
+//! to maintain the nominal size k.
 //!
-//! This library is divided into modules that constitute distinct groups of functionality.
+//! # Overview
+//!
+//! Theta sketches provide approximate distinct count (cardinality) estimation with
+//! configurable accuracy and memory usage. The implementation supports:
+//!
+//! - **ThetaSketch**: Mutable sketch for building from input data
 
-#![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(missing_docs)]
+mod hash_table;
+mod sketch;
 
-// See https://github.com/apache/datasketches-rust/issues/28 for more information.
-#[cfg(target_endian = "big")]
-compile_error!("datasketches does not support big-endian targets");
-
-pub mod countmin;
-pub mod error;
-pub mod hll;
-pub mod tdigest;
-pub mod theta;
-
-mod hash;
+pub use self::sketch::ThetaSketch;
